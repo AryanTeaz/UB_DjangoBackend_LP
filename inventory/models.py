@@ -1,5 +1,5 @@
 from django.db import models
-
+from django.contrib.auth.models import User
 class Category(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
@@ -18,6 +18,7 @@ class Supplier(models.Model):
 class Product(models.Model):
     category = models.ForeignKey(Category, on_delete=models.CASCADE, null=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, null=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     name = models.CharField(max_length=200)
     sku = models.CharField(max_length=50, unique=True)
     stock = models.IntegerField(default=0)
