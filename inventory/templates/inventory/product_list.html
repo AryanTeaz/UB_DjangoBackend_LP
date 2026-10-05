@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Warehouse Inventory</title>
+</head>
+<body>
+    <h1>ShelfTrack Inventory</h1>
+    <ul>
+        {% for product in products %}
+            <li>{{ product.name }} (SKU: {{ product.sku }}) - Stock: {{ product.stock }}</li>
+        {% empty %}
+            <li>No products in stock.</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
