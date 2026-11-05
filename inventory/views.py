@@ -1,203 +1,77 @@
-
 from django.http import JsonResponse
 from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
-import json
-from rest_framework.authtoken.models import Token
+from rest_framework import status
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.authtoken.views import obtain_auth_token
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.viewsets import ModelViewSet
+
 from .models import Product
+from .permissions import ProductPermission
+from .serializers import ProductSerializer
 
 
-def get_user_from_request(request):
+class ProductViewSet(ModelViewSet):
+    queryset = Product.objects.select_related(
+        "category", "supplier", "created_by"
+    ).order_by("id")
+    serializer_class = ProductSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [ProductPermission]
 
-    auth_header = request.headers.get('Authorization')
+    def get_queryset(self):
+        queryset = super().get_queryset()
 
-    if auth_header and auth_header.startswith('Token '):
-        token_key = auth_header.split(' ')[1]
+        if self.action != "list":
+            return queryset
 
-        try:
-            return Token.objects.get(key=token_key).user
-        except Token.DoesNotExist:
-            return None
+        category = self.request.query_params.get("category")
+        creator = self.request.query_params.get("creator")
 
-    return None
+        if category:
+            queryset = queryset.filter(category__name__icontains=category)
+
+        if creator:
+            queryset = queryset.filter(created_by__username__icontains=creator)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
 
-@csrf_exempt
-def product_list(request):
-    if request.method == 'GET':
-        category_query = request.GET.get('category')
-        # Bonus: Creator filter capture karein
-        creator_query = request.GET.get('creator')
-        
-        queryset = Product.objects.all()
-        
-        if category_query:
-            queryset = queryset.filter(category__name__icontains=category_query)
-        if creator_query:
-            # Bonus: Creator ke username se filter karein
-            queryset = queryset.filter(created_by__username__icontains=creator_query)
-            
-        # Bonus: 'created_by__username' ko list mein add kiya
-        products = list(queryset.values(
-            'id', 'name', 'sku', 'stock', 'category__name', 'supplier__name', 'created_by__username'
-        ))
-            
-        return JsonResponse({'products': products})
+login_view = obtain_auth_token
 
-    elif request.method == 'POST':
-        user = get_user_from_request(request)
-        if not user:
-            return JsonResponse({'error': '401 Unauthorized'}, status=401)
-        if not user.has_perm('inventory.add_product'):
-            return JsonResponse({'error': '403 Forbidden'}, status=403)
 
-        data = json.loads(request.body)
-        product = Product.objects.create(
-            name=data['name'],
-            sku=data['sku'],
-            stock=data.get('stock', 0),
-            price=data['price'],
-            category_id=data.get('category_id'),
-            supplier_id=data.get('supplier_id'),
-            created_by=user
-        )
-        return JsonResponse({'message': 'Product created successfully', 'id': product.id}, status=201)
-@csrf_exempt
-def product_detail(request, pk):
+@api_view(["POST"])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    request.auth.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
-    try:
-        product = Product.objects.get(pk=pk)
 
-    except Product.DoesNotExist:
-        return JsonResponse(
-            {'error': 'Product not found'},
-            status=404
-        )
-    if request.method == 'GET':
-
-        data = {
-            'id': product.id,
-            'name': product.name,
-            'sku': product.sku,
-            'stock': product.stock,
-            'price': str(product.price),
-            'category': (
-                product.category.name
-                if product.category
-                else 'No Category'
-            ),
-            'supplier': (
-                product.supplier.name
-                if product.supplier
-                else 'No Supplier'
-            ),
-            'created_by': (
-                product.created_by.username
-                if product.created_by
-                else 'Unknown'
-            )
-        }
-
-        return JsonResponse(data)
-
-    # PUT - Login + change permission required
-    elif request.method == 'PUT':
-
-        user = get_user_from_request(request)
-
-        if not user:
-            return JsonResponse(
-                {'error': '401 Unauthorized'},
-                status=401
-            )
-
-        if not user.has_perm('inventory.change_product'):
-            return JsonResponse(
-                {'error': '403 Forbidden: Cannot update'},
-                status=403
-            )
-
-        try:
-            data = json.loads(request.body)
-
-            product.name = data.get('name', product.name)
-            product.sku = data.get('sku', product.sku)
-            product.stock = data.get('stock', product.stock)
-            product.price = data.get('price', product.price)
-
-            product.save()
-
-            return JsonResponse(
-                {'message': 'Product updated successfully'}
-            )
-
-        except json.JSONDecodeError:
-            return JsonResponse(
-                {'error': 'Invalid JSON'},
-                status=400
-            )
-
-    # DELETE - Login + delete permission required
-    elif request.method == 'DELETE':
-
-        user = get_user_from_request(request)
-
-        if not user:
-            return JsonResponse(
-                {'error': '401 Unauthorized'},
-                status=401
-            )
-
-        if not user.has_perm('inventory.delete_product'):
-            return JsonResponse(
-                {'error': '403 Forbidden: Inventory Admin only'},
-                status=403
-            )
-
-        product.delete()
-
-        return JsonResponse(
-            {'message': 'Product deleted successfully'}
-        )
-
-    else:
-        return JsonResponse(
-            {'error': 'Method not allowed'},
-            status=405
-        )
-
-@csrf_exempt
 def low_stock_list(request):
+    if request.method != "GET":
+        response = JsonResponse({"error": "Method not allowed"}, status=405)
+        response["Allow"] = "GET"
+        return response
 
-    if request.method == 'GET':
-
-        low_stock_products = list(
-            Product.objects
-            .filter(stock__lt=10)
-            .values(
-                'id',
-                'name',
-                'stock'
-            )
-        )
-
-        return JsonResponse(
-            {'low_stock': low_stock_products}
-        )
-
-    return JsonResponse(
-        {'error': 'Method not allowed'},
-        status=405
+    products = list(
+        Product.objects.filter(stock__lt=10).values("id", "name", "stock")
     )
-
+    return JsonResponse({"low_stock": products})
 
 
 def product_list_html(request):
-
-    products = Product.objects.all()
-
     return render(
         request,
-        'inventory/product_list.html',
-        {'products': products}
+        "inventory/product_list.html",
+        {"products": Product.objects.all()},
     )
